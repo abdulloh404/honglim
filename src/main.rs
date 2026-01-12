@@ -51,7 +51,6 @@ fn combo_1_once() {
     sleep_range(0.45, 0.65);
 }
 
-
 fn release_safety() {
     // กันค้าง (กรณีโดน stop/หรือ error)
     key_up("s");
