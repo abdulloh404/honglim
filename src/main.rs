@@ -94,7 +94,7 @@ fn combo_2_once() {
 }
 
 #[allow(dead_code)]
-fn combo_3_once() {
+fn combo_3_once(use_strong_1: bool) {
     key_down("s");
     sleep_range(0.05, 0.10);
     key_down("c");
@@ -117,8 +117,11 @@ fn combo_3_once() {
     key_up("s");
     key_up("q");
 
-    // strong_skill_1()
-    strong_skill_2()
+    if use_strong_1 {
+        strong_skill_1();
+    } else {
+        strong_skill_2();
+    }
 }
 
 #[allow(dead_code)]
@@ -170,33 +173,56 @@ fn strong_skill_2() {
 
 }
 
+fn worker_loop(running: Arc<AtomicBool>) {
+    let mut use_strong_1 = true;
+
+    while running.load(Ordering::Relaxed) {
+        combo_1_once();
+        sleep_range(0.2, 0.25);
+
+        combo_2_once();
+        sleep_range(0.4, 0.45);
+
+        combo_3_once(use_strong_1);
+        sleep_range(0.2, 0.25);
+        use_strong_1 = !use_strong_1;
+    }
+
+    release_safety();
+}
+
 fn main() {
+    let running = Arc::new(AtomicBool::new(false));
     let busy = Arc::new(AtomicBool::new(false));
+
+    let running_cb = running.clone();
     let busy_cb = busy.clone();
 
-    println!("F9 = Run combo once, F10 = Stop (safety release)");
+    println!("F9 = Start loop, F10 = Stop");
 
     if let Err(err) = listen(move |event: Event| match event.event_type {
         EventType::KeyPress(key) => {
+            // Start
             if key == Key::F9 {
                 if busy_cb.swap(true, Ordering::Relaxed) {
                     return;
                 }
 
+                running_cb.store(true, Ordering::Relaxed);
+
+                let running2 = running_cb.clone();
                 let busy2 = busy_cb.clone();
                 thread::spawn(move || {
-                    // combo_1_once();
-                    // sleep_range(0.2, 0.25);
-                    // combo_2_once();
-                    strong_skill_2();
-
+                    worker_loop(running2);
                     busy2.store(false, Ordering::Relaxed);
                     println!("Done");
                 });
                 return;
             }
 
+            // Stop
             if key == Key::F10 {
+                running_cb.store(false, Ordering::Relaxed);
                 release_safety();
                 busy_cb.store(false, Ordering::Relaxed);
                 println!("Stop (released)");
@@ -208,3 +234,4 @@ fn main() {
         eprintln!("Error: {:?}", err);
     }
 }
+
