@@ -47,14 +47,14 @@ fn sleep_range(min: f64, max: f64) {
 #[allow(dead_code)]
 fn combo_1_once() {
     key_down("s");
-    sleep_range(0.02, 0.25);
+    sleep_range(0.05, 0.10);
     click(1);
     key_up("s");
 
-    sleep_range(0.02, 0.25);
+    sleep_range(0.05, 0.06);
     click(3);
 
-    sleep_range(0.5, 0.55);
+    sleep_range(0.6, 0.65);
     click(3);
 
     sleep_range(0.1, 0.15);
@@ -72,7 +72,7 @@ fn passive_skill() {
 #[allow(dead_code)]
 fn combo_2_once() {
     key_down("s");
-    sleep_range(0.02, 0.03);
+    sleep_range(0.05, 0.10);
     key_down("f");
     key_up("f");
     key_up("s");
@@ -93,6 +93,83 @@ fn combo_2_once() {
     passive_skill();
 }
 
+#[allow(dead_code)]
+fn combo_3_once() {
+    key_down("s");
+    sleep_range(0.05, 0.10);
+    key_down("c");
+    key_up("s");
+    key_up("c");
+
+    sleep_range(1.65, 1.70);
+
+    mouse_down(1);
+    mouse_down(3);
+    sleep_range(0.01, 0.05);
+    mouse_up(1);
+    mouse_up(3);
+
+    sleep_range(0.65, 0.7);
+
+    key_down("s");
+    sleep_range(0.05, 0.10);
+    key_down("q");
+    key_up("s");
+    key_up("q");
+
+    // strong_skill_1()
+    strong_skill_2()
+}
+
+#[allow(dead_code)]
+fn strong_skill_1() {
+    key_down("Shift_L");
+    mouse_down(1);     
+    mouse_down(3); 
+    sleep_range(2.2, 2.3);
+    mouse_up(1);
+    mouse_up(3);
+    key_up("Shift_L");
+
+    key_down("f");
+    sleep_range(2.2, 2.3);
+    key_up("f");
+
+    passive_skill();
+}
+
+#[allow(dead_code)]
+fn strong_skill_2() {
+    key_down("Shift_L");
+    sleep_range(0.045, 0.050);
+    key_down("f");
+    sleep_range(1.1,1.15);
+    key_up("Shift_L");
+    key_up("f");
+
+    key_down("Shift_L");
+    mouse_down(3); 
+    sleep_range(1.2, 1.25);
+    key_up("Shift_L");
+    mouse_up(3);
+
+    passive_skill();
+
+    key_down("s");
+    sleep_range(0.045, 0.050);
+    mouse_down(1);     
+    mouse_down(3); 
+    sleep_range(1.2, 1.25);
+    mouse_up(1);
+    mouse_up(3);
+    sleep_range(0.045, 0.050);
+    key_up("s");
+    
+    sleep_range(0.5, 0.6);
+    mouse_up(3);
+
+}
+
 fn main() {
     let busy = Arc::new(AtomicBool::new(false));
     let busy_cb = busy.clone();
@@ -108,13 +185,11 @@ fn main() {
 
                 let busy2 = busy_cb.clone();
                 thread::spawn(move || {
-                    println!("Run combo-1...");
-                    combo_1_once();
+                    // combo_1_once();
+                    // sleep_range(0.2, 0.25);
+                    // combo_2_once();
+                    strong_skill_2();
 
-                    sleep_range(0.4, 0.45);
-
-                    println!("Run combo-2...");
-                    combo_2_once();
                     busy2.store(false, Ordering::Relaxed);
                     println!("Done");
                 });
