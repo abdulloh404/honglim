@@ -46,6 +46,7 @@ fn sleep_range(min: f64, max: f64) {
 
 #[allow(dead_code)]
 fn combo_1_once() {
+    // 1
     key_down("s");
     sleep_range(0.05, 0.10);
     click(1);
@@ -80,29 +81,31 @@ fn combo_2_once() {
     sleep_range(0.60, 0.65);
     click(3);
 
-    sleep_range(1.20, 1.25);
+    sleep_range(1.10, 1.15);
     click(3);
 
-    sleep_range(0.80, 0.85);
+    sleep_range(0.75, 0.80);
     click(3);
 
-    sleep_range(0.80, 0.85);
+    sleep_range(0.75, 0.80);
     click(3);
 
-    sleep_range(0.90, 0.95);
+    sleep_range(0.85, 0.90);
     passive_skill();
 }
 
 #[allow(dead_code)]
 fn combo_3_once(use_strong_1: bool) {
+    // 1
     key_down("s");
     sleep_range(0.05, 0.10);
     key_down("c");
     key_up("s");
     key_up("c");
 
-    sleep_range(1.65, 1.70);
+    sleep_range(1.05, 1.10);
 
+    // 2
     mouse_down(1);
     mouse_down(3);
     sleep_range(0.01, 0.05);
@@ -111,6 +114,7 @@ fn combo_3_once(use_strong_1: bool) {
 
     sleep_range(0.65, 0.7);
 
+    // 3
     key_down("s");
     sleep_range(0.05, 0.10);
     key_down("q");
@@ -135,7 +139,7 @@ fn strong_skill_1() {
     key_up("Shift_L");
 
     key_down("f");
-    sleep_range(2.2, 2.3);
+    sleep_range(2.65, 2.70);
     key_up("f");
 
     passive_skill();
@@ -143,6 +147,7 @@ fn strong_skill_1() {
 
 #[allow(dead_code)]
 fn strong_skill_2() {
+    // 1
     key_down("Shift_L");
     sleep_range(0.045, 0.050);
     key_down("f");
@@ -150,9 +155,10 @@ fn strong_skill_2() {
     key_up("Shift_L");
     key_up("f");
 
+    // 2
     key_down("Shift_L");
     mouse_down(3); 
-    sleep_range(1.2, 1.25);
+    sleep_range(1.8, 1.85);
     key_up("Shift_L");
     mouse_up(3);
 
@@ -173,19 +179,24 @@ fn strong_skill_2() {
 
 }
 
+#[allow(dead_code)]
 fn worker_loop(running: Arc<AtomicBool>) {
     let mut use_strong_1 = true;
 
     while running.load(Ordering::Relaxed) {
+        sleep_range(0.25, 0.30);
+       
         combo_1_once();
-        sleep_range(0.2, 0.25);
+        sleep_range(0.25, 0.30);
 
         combo_2_once();
-        sleep_range(0.4, 0.45);
+        sleep_range(0.25, 0.30);
 
         combo_3_once(use_strong_1);
-        sleep_range(0.2, 0.25);
+        sleep_range(0.25, 0.30);
+
         use_strong_1 = !use_strong_1;
+
     }
 
     release_safety();
@@ -214,6 +225,13 @@ fn main() {
                 let busy2 = busy_cb.clone();
                 thread::spawn(move || {
                     worker_loop(running2);
+                   
+                    // combo_1_once();
+                    // sleep_range(0.25, 0.30);
+                    // combo_2_once();
+                    // sleep_range(0.25, 0.30);
+                    // combo_3_once();
+                    // sleep_range(0.25, 0.30);
                     busy2.store(false, Ordering::Relaxed);
                     println!("Done");
                 });
