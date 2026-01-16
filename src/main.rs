@@ -35,6 +35,10 @@ fn click(button: u8) {
 
 fn release_safety() {
     key_up("s");
+    key_up("f");
+    key_up("q");
+    key_up("Shift_L");
+    mouse_up(1);
     mouse_up(3);
 }
 
@@ -55,17 +59,19 @@ fn combo_1_once() {
     sleep_range(0.05, 0.06);
     click(3);
 
-    sleep_range(0.6, 0.65);
+    sleep_range(0.5, 0.55);
     click(3);
 
-    sleep_range(0.1, 0.15);
+    sleep_range(0.1, 0.2);
     passive_skill();
+    release_safety();
 }
 
 fn passive_skill() {
     key_down("s");
+    sleep_range(0.01, 0.02);
     mouse_down(3);
-    sleep_range(0.6, 0.7);
+    sleep_range(0.45, 0.50);
     mouse_up(3);
     key_up("s");
 }
@@ -92,6 +98,7 @@ fn combo_2_once() {
 
     sleep_range(0.85, 0.90);
     passive_skill();
+    release_safety();
 }
 
 #[allow(dead_code)]
@@ -116,9 +123,10 @@ fn combo_3_once(use_strong_1: bool) {
 
     // 3
     key_down("s");
-    sleep_range(0.05, 0.10);
+    sleep_range(0.01, 0.02);
     key_down("q");
     key_up("s");
+    sleep_range(0.01, 0.02);
     key_up("q");
 
     if use_strong_1 {
@@ -126,30 +134,38 @@ fn combo_3_once(use_strong_1: bool) {
     } else {
         strong_skill_2();
     }
+
+    release_safety();
 }
 
 #[allow(dead_code)]
 fn strong_skill_1() {
+    // 2
     key_down("Shift_L");
-    mouse_down(1);     
-    mouse_down(3); 
+    sleep_range(0.01, 0.02);
+    mouse_down(1);
+    sleep_range(0.01, 0.02);
+    mouse_down(3);
     sleep_range(2.2, 2.3);
+
+    key_up("Shift_L");
     mouse_up(1);
     mouse_up(3);
-    key_up("Shift_L");
 
+    // 2
     key_down("f");
-    sleep_range(2.65, 2.70);
+    sleep_range(2.0, 2.05);
     key_up("f");
 
     passive_skill();
+    release_safety();
 }
 
 #[allow(dead_code)]
 fn strong_skill_2() {
     // 1
     key_down("Shift_L");
-    sleep_range(0.045, 0.050);
+    sleep_range(0.01, 0.02);
     key_down("f");
     sleep_range(1.1,1.15);
     key_up("Shift_L");
@@ -158,12 +174,13 @@ fn strong_skill_2() {
     // 2
     key_down("Shift_L");
     mouse_down(3); 
-    sleep_range(1.8, 1.85);
+    sleep_range(1.65, 1.70);
     key_up("Shift_L");
     mouse_up(3);
 
     passive_skill();
 
+    // 3
     key_down("s");
     sleep_range(0.045, 0.050);
     mouse_down(1);     
@@ -177,6 +194,7 @@ fn strong_skill_2() {
     sleep_range(0.5, 0.6);
     mouse_up(3);
 
+    release_safety();
 }
 
 #[allow(dead_code)]
@@ -227,11 +245,13 @@ fn main() {
                     worker_loop(running2);
                    
                     // combo_1_once();
-                    // sleep_range(0.25, 0.30);
+                    // sleep_range(0.30, 0.35);
                     // combo_2_once();
-                    // sleep_range(0.25, 0.30);
-                    // combo_3_once();
-                    // sleep_range(0.25, 0.30);
+                    // sleep_range(0.30, 0.35);
+                    // combo_3_once(true);
+                    // sleep_range(0.30, 0.35);
+                    // strong_skill_1();
+                    // strong_skill_2();
                     busy2.store(false, Ordering::Relaxed);
                     println!("Done");
                 });
