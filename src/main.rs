@@ -7,7 +7,7 @@ use std::{
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 fn xdotool(args: &[&str]) {
@@ -42,15 +42,78 @@ fn release_safety() {
     mouse_up(3);
 }
 
+fn fmt_elapsed(start: Instant) -> String {
+    let secs = start.elapsed().as_secs();
+    let mm = secs / 60;
+    let ss = secs % 60;
+    format!("{:02}:{:02}", mm, ss)
+}
+
+fn log_elapsed(start: Instant, label: &str) {
+    println!("{} | {}", label, fmt_elapsed(start));
+}
+
 fn sleep_range(min: f64, max: f64) {
     let mut rng = rand::thread_rng();
     let secs = rng.gen_range(min..max);
     thread::sleep(Duration::from_secs_f64(secs));
 }
 
+fn sleep_exact(secs: f64) {
+    thread::sleep(Duration::from_secs_f64(secs));
+}
+
+fn tap_key(key: &str) {
+    key_down(key);
+    sleep_exact(0.01);
+    key_up(key);
+}
+
+#[derive(Debug)]
+struct BuffCooldown {
+    last_q: Option<Instant>, // 60s
+    last_2: Option<Instant>, // 60s
+    last_3: Option<Instant>, // 60s
+    last_4: Option<Instant>, // 180s
+}
+
+impl BuffCooldown {
+    fn new() -> Self {
+        Self {
+            last_q: None,
+            last_2: None,
+            last_3: None,
+            last_4: None,
+        }
+    }
+
+    fn ready(last: Option<Instant>, cd: Duration) -> bool {
+        match last {
+            None => true,
+            Some(t) => t.elapsed() >= cd,
+        }
+    }
+
+    fn press_if_ready(key: &str, last: &mut Option<Instant>, cd: Duration, after_sleep: f64) {
+        if Self::ready(*last, cd) {
+            tap_key(key);
+            *last = Some(Instant::now());
+            sleep_exact(after_sleep);
+        }
+    }
+
+    fn buff_once(&mut self) {
+        Self::press_if_ready("q", &mut self.last_q, Duration::from_secs(60), 0.75);
+        Self::press_if_ready("2", &mut self.last_2, Duration::from_secs(60), 0.95);
+        Self::press_if_ready("3", &mut self.last_3, Duration::from_secs(60), 0.75);
+        Self::press_if_ready("4", &mut self.last_4, Duration::from_secs(180), 0.95);
+
+        release_safety();
+    }
+}
+
 #[allow(dead_code)]
 fn combo_1_once() {
-    // 1
     key_down("s");
     sleep_range(0.05, 0.10);
     click(1);
@@ -140,7 +203,7 @@ fn combo_3_once(use_strong_1: bool) {
 
 #[allow(dead_code)]
 fn strong_skill_1() {
-    // 2
+    // 1
     key_down("Shift_L");
     sleep_range(0.01, 0.02);
     mouse_down(1);
@@ -167,13 +230,13 @@ fn strong_skill_2() {
     key_down("Shift_L");
     sleep_range(0.01, 0.02);
     key_down("f");
-    sleep_range(1.1,1.15);
+    sleep_range(1.1, 1.15);
     key_up("Shift_L");
     key_up("f");
 
     // 2
     key_down("Shift_L");
-    mouse_down(3); 
+    mouse_down(3);
     sleep_range(1.65, 1.70);
     key_up("Shift_L");
     mouse_up(3);
@@ -183,8 +246,8 @@ fn strong_skill_2() {
     // 3
     key_down("s");
     sleep_range(0.045, 0.050);
-    mouse_down(1);     
-    mouse_down(3); 
+    mouse_down(1);
+    mouse_down(3);
     sleep_range(1.2, 1.25);
     mouse_up(1);
     mouse_up(3);
@@ -199,25 +262,49 @@ fn strong_skill_2() {
 
 #[allow(dead_code)]
 fn worker_loop(running: Arc<AtomicBool>) {
-    let mut use_strong_1 = true;
+    let start = Instant::now();
+    let mut round: u64 = 0;
+
+    let mut buffs = BuffCooldown::new();
+
+    buffs.buff_once();
+    round += 1;
+    log_elapsed(start, &format!("Round #{round} (pre-buff)"));
 
     while running.load(Ordering::Relaxed) {
         sleep_range(0.25, 0.30);
        
+        // round 1
         combo_1_once();
         sleep_range(0.25, 0.30);
 
         combo_2_once();
         sleep_range(0.25, 0.30);
 
-        combo_3_once(use_strong_1);
+        combo_3_once(true);
+        sleep_range(0.6, 0.65);
+
+        // round 2
+        combo_1_once();
         sleep_range(0.25, 0.30);
 
-        use_strong_1 = !use_strong_1;
+        combo_2_once();
+        sleep_range(0.25, 0.30);
 
+        combo_3_once(false);
+        sleep_range(0.25, 0.30);
+
+        buffs.buff_once();
+
+        release_safety();
+        sleep_range(0.25, 0.30);
+
+        round += 1;
+        log_elapsed(start, &format!("Round #{round} done"));
     }
 
     release_safety();
+    log_elapsed(start, "Stopped");
 }
 
 fn main() {
@@ -231,7 +318,6 @@ fn main() {
 
     if let Err(err) = listen(move |event: Event| match event.event_type {
         EventType::KeyPress(key) => {
-            // Start
             if key == Key::F9 {
                 if busy_cb.swap(true, Ordering::Relaxed) {
                     return;
@@ -253,17 +339,16 @@ fn main() {
                     // strong_skill_1();
                     // strong_skill_2();
                     busy2.store(false, Ordering::Relaxed);
-                    println!("Done");
+                    // println!("Done");
                 });
                 return;
             }
 
-            // Stop
             if key == Key::F10 {
                 running_cb.store(false, Ordering::Relaxed);
                 release_safety();
                 busy_cb.store(false, Ordering::Relaxed);
-                println!("Stop (released)");
+                // println!("Stop");
                 return;
             }
         }
@@ -272,4 +357,3 @@ fn main() {
         eprintln!("Error: {:?}", err);
     }
 }
-
