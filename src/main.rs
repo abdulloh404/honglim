@@ -3,7 +3,7 @@ use rdev::{listen, Event, EventType, Key};
 use std::{
     process::Command,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread,
@@ -37,8 +37,10 @@ fn release_safety() {
     key_up("s");
     key_up("f");
     key_up("q");
+    key_up("c");
     key_up("Shift_L");
     mouse_up(1);
+    mouse_up(2);
     mouse_up(3);
 }
 
@@ -53,28 +55,63 @@ fn log_elapsed(start: Instant, label: &str) {
     println!("{} | {}", label, fmt_elapsed(start));
 }
 
-fn sleep_range(min: f64, max: f64) {
-    let mut rng = rand::thread_rng();
-    let secs = rng.gen_range(min..max);
-    thread::sleep(Duration::from_secs_f64(secs));
+#[derive(Clone)]
+struct Ctrl {
+    running: Arc<AtomicBool>,
+    run_id: Arc<AtomicU64>,
+    my_id: u64,
 }
 
-fn sleep_exact(secs: f64) {
-    thread::sleep(Duration::from_secs_f64(secs));
-}
+impl Ctrl {
+    fn stop_requested(&self) -> bool {
+        !self.running.load(Ordering::Relaxed) || self.run_id.load(Ordering::Relaxed) != self.my_id
+    }
 
-fn tap_key(key: &str) {
-    key_down(key);
-    sleep_exact(0.01);
-    key_up(key);
+    fn sleep_interruptible(&self, secs: f64) -> bool {
+        if secs <= 0.0 {
+            return !self.stop_requested();
+        }
+        let total = Duration::from_secs_f64(secs);
+        let tick = Duration::from_millis(5);
+        let start = Instant::now();
+
+        while start.elapsed() < total {
+            if self.stop_requested() {
+                release_safety();
+                return false;
+            }
+            let remaining = total.saturating_sub(start.elapsed());
+            thread::sleep(std::cmp::min(tick, remaining));
+        }
+        true
+    }
+
+    fn sleep_range(&self, min: f64, max: f64) -> bool {
+        let mut rng = rand::thread_rng();
+        let secs = rng.gen_range(min..max);
+        self.sleep_interruptible(secs)
+    }
+
+    fn tap_key(&self, key: &str) -> bool {
+        if self.stop_requested() {
+            release_safety();
+            return false;
+        }
+        key_down(key);
+        if !self.sleep_interruptible(0.01) {
+            return false;
+        }
+        key_up(key);
+        true
+    }
 }
 
 #[derive(Debug)]
 struct BuffCooldown {
-    last_q: Option<Instant>, // 60s
-    last_2: Option<Instant>, // 60s
-    last_3: Option<Instant>, // 60s
-    last_4: Option<Instant>, // 180s
+    last_q: Option<Instant>,
+    last_2: Option<Instant>,
+    last_3: Option<Instant>,
+    last_4: Option<Instant>,
 }
 
 impl BuffCooldown {
@@ -94,210 +131,403 @@ impl BuffCooldown {
         }
     }
 
-    fn press_if_ready(key: &str, last: &mut Option<Instant>, cd: Duration, after_sleep: f64) {
-        if Self::ready(*last, cd) {
-            tap_key(key);
-            *last = Some(Instant::now());
-            sleep_exact(after_sleep);
+    fn press_if_ready(
+        ctrl: &Ctrl,
+        key: &str,
+        last: &mut Option<Instant>,
+        cd: Duration,
+        after_sleep: f64,
+    ) -> bool {
+        if ctrl.stop_requested() {
+            release_safety();
+            return false;
         }
+        if Self::ready(*last, cd) {
+            if !ctrl.tap_key(key) {
+                return false;
+            }
+            *last = Some(Instant::now());
+            if !ctrl.sleep_interruptible(after_sleep) {
+                return false;
+            }
+        }
+        true
     }
 
-    fn buff_once(&mut self) {
-        Self::press_if_ready("q", &mut self.last_q, Duration::from_secs(60), 0.75);
-        Self::press_if_ready("2", &mut self.last_2, Duration::from_secs(60), 0.95);
-        Self::press_if_ready("3", &mut self.last_3, Duration::from_secs(60), 0.75);
-        Self::press_if_ready("4", &mut self.last_4, Duration::from_secs(180), 0.95);
+    fn buff_once(&mut self, ctrl: &Ctrl) -> bool {
+        if !Self::press_if_ready(ctrl, "q", &mut self.last_q, Duration::from_secs(60), 0.75) {
+            return false;
+        }
+        if !Self::press_if_ready(ctrl, "2", &mut self.last_2, Duration::from_secs(60), 0.95) {
+            return false;
+        }
+        if !Self::press_if_ready(ctrl, "3", &mut self.last_3, Duration::from_secs(60), 0.75) {
+            return false;
+        }
+        if !Self::press_if_ready(ctrl, "4", &mut self.last_4, Duration::from_secs(180), 0.95) {
+            return false;
+        }
+
+        if ctrl.stop_requested() {
+            release_safety();
+            return false;
+        }
+
+        if !ctrl.tap_key("z") {
+            return false;
+        }
 
         release_safety();
+        true
     }
 }
 
-#[allow(dead_code)]
-fn combo_1_once() {
+fn passive_skill(ctrl: &Ctrl) -> bool {
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
     key_down("s");
-    sleep_range(0.05, 0.10);
+    if !ctrl.sleep_range(0.01, 0.02) {
+        return false;
+    }
+    mouse_down(3);
+    if !ctrl.sleep_range(0.45, 0.5) {
+        return false;
+    }
+    mouse_up(3);
+    key_up("s");
+    true
+}
+
+fn combo_1_once(ctrl: &Ctrl) -> bool {
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
+    key_down("s");
+    if !ctrl.sleep_range(0.05, 0.1) {
+        return false;
+    }
     click(1);
     key_up("s");
 
-    sleep_range(0.05, 0.06);
+    if !ctrl.sleep_range(0.05, 0.06) {
+        return false;
+    }
     click(3);
 
-    sleep_range(0.5, 0.55);
+    if !ctrl.sleep_range(0.5, 0.55) {
+        return false;
+    }
     click(3);
 
-    sleep_range(0.1, 0.2);
-    passive_skill();
+    if !ctrl.sleep_range(0.1, 0.2) {
+        return false;
+    }
+    if !passive_skill(ctrl) {
+        return false;
+    }
+
     release_safety();
+    true
 }
 
-fn passive_skill() {
-    key_down("s");
-    sleep_range(0.01, 0.02);
-    mouse_down(3);
-    sleep_range(0.45, 0.50);
-    mouse_up(3);
-    key_up("s");
-}
+fn combo_2_once(ctrl: &Ctrl) -> bool {
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
 
-#[allow(dead_code)]
-fn combo_2_once() {
     key_down("s");
-    sleep_range(0.05, 0.10);
+    if !ctrl.sleep_range(0.05, 0.1) {
+        return false;
+    }
     key_down("f");
     key_up("f");
     key_up("s");
 
-    sleep_range(0.60, 0.65);
+    if !ctrl.sleep_range(0.6, 0.65) {
+        return false;
+    }
     click(3);
 
-    sleep_range(1.10, 1.15);
+    if !ctrl.sleep_range(1.1, 1.15) {
+        return false;
+    }
     click(3);
 
-    sleep_range(0.75, 0.80);
+    if !ctrl.sleep_range(0.75, 0.8) {
+        return false;
+    }
     click(3);
 
-    sleep_range(0.75, 0.80);
+    if !ctrl.sleep_range(0.75, 0.8) {
+        return false;
+    }
     click(3);
 
-    sleep_range(0.85, 0.90);
-    passive_skill();
+    if !ctrl.sleep_range(0.85, 0.9) {
+        return false;
+    }
+    if !passive_skill(ctrl) {
+        return false;
+    }
+
     release_safety();
+    true
 }
 
-#[allow(dead_code)]
-fn combo_3_once(use_strong_1: bool) {
-    // 1
+fn strong_skill_1(ctrl: &Ctrl) -> bool {
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
+    key_down("Shift_L");
+    if !ctrl.sleep_range(0.01, 0.02) {
+        return false;
+    }
+    mouse_down(1);
+    if !ctrl.sleep_range(0.01, 0.02) {
+        return false;
+    }
+    mouse_down(3);
+    if !ctrl.sleep_range(2.2, 2.3) {
+        return false;
+    }
+
+    key_up("Shift_L");
+    mouse_up(1);
+    mouse_up(3);
+
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
+    key_down("f");
+    if !ctrl.sleep_range(2.0, 2.05) {
+        return false;
+    }
+    key_up("f");
+
+    if !passive_skill(ctrl) {
+        return false;
+    }
+    release_safety();
+    true
+}
+
+fn strong_skill_2(ctrl: &Ctrl) -> bool {
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
+    key_down("Shift_L");
+    if !ctrl.sleep_range(0.01, 0.02) {
+        return false;
+    }
+    key_down("f");
+    if !ctrl.sleep_range(1.1, 1.15) {
+        return false;
+    }
+    key_up("Shift_L");
+    key_up("f");
+
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
+    key_down("Shift_L");
+    mouse_down(3);
+    if !ctrl.sleep_range(1.65, 1.7) {
+        return false;
+    }
+    key_up("Shift_L");
+    mouse_up(3);
+
+    if !passive_skill(ctrl) {
+        return false;
+    }
+
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
     key_down("s");
-    sleep_range(0.05, 0.10);
+    if !ctrl.sleep_range(0.045, 0.05) {
+        return false;
+    }
+    mouse_down(1);
+    mouse_down(3);
+    if !ctrl.sleep_range(1.2, 1.25) {
+        return false;
+    }
+    mouse_up(1);
+    mouse_up(3);
+    if !ctrl.sleep_range(0.045, 0.05) {
+        return false;
+    }
+    key_up("s");
+
+    if !ctrl.sleep_range(0.5, 0.6) {
+        return false;
+    }
+    mouse_up(3);
+
+    release_safety();
+    true
+}
+
+fn combo_3_once(ctrl: &Ctrl, use_strong_1: bool) -> bool {
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
+    key_down("s");
+    if !ctrl.sleep_range(0.05, 0.1) {
+        return false;
+    }
     key_down("c");
     key_up("s");
     key_up("c");
 
-    sleep_range(1.05, 1.10);
+    if !ctrl.sleep_range(1.05, 1.1) {
+        return false;
+    }
 
-    // 2
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
     mouse_down(1);
     mouse_down(3);
-    sleep_range(0.01, 0.05);
+    if !ctrl.sleep_range(0.01, 0.05) {
+        return false;
+    }
     mouse_up(1);
     mouse_up(3);
 
-    sleep_range(0.65, 0.7);
+    if !ctrl.sleep_range(0.65, 0.7) {
+        return false;
+    }
 
-    // 3
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
     key_down("s");
-    sleep_range(0.01, 0.02);
+    if !ctrl.sleep_range(0.01, 0.02) {
+        return false;
+    }
     key_down("q");
     key_up("s");
-    sleep_range(0.01, 0.02);
+    if !ctrl.sleep_range(0.01, 0.02) {
+        return false;
+    }
     key_up("q");
 
-    if use_strong_1 {
-        strong_skill_1();
+    if ctrl.stop_requested() {
+        release_safety();
+        return false;
+    }
+
+    let ok: bool = if use_strong_1 {
+        strong_skill_1(ctrl)
     } else {
-        strong_skill_2();
+        strong_skill_2(ctrl)
+    };
+
+    if !ok {
+        return false;
     }
 
     release_safety();
+    true
 }
 
-#[allow(dead_code)]
-fn strong_skill_1() {
-    // 1
-    key_down("Shift_L");
-    sleep_range(0.01, 0.02);
-    mouse_down(1);
-    sleep_range(0.01, 0.02);
-    mouse_down(3);
-    sleep_range(2.2, 2.3);
+fn worker_loop(running: Arc<AtomicBool>, run_id: Arc<AtomicU64>, my_id: u64) {
+    let ctrl = Ctrl {
+        running,
+        run_id,
+        my_id,
+    };
 
-    key_up("Shift_L");
-    mouse_up(1);
-    mouse_up(3);
-
-    // 2
-    key_down("f");
-    sleep_range(2.0, 2.05);
-    key_up("f");
-
-    passive_skill();
-    release_safety();
-}
-
-#[allow(dead_code)]
-fn strong_skill_2() {
-    // 1
-    key_down("Shift_L");
-    sleep_range(0.01, 0.02);
-    key_down("f");
-    sleep_range(1.1, 1.15);
-    key_up("Shift_L");
-    key_up("f");
-
-    // 2
-    key_down("Shift_L");
-    mouse_down(3);
-    sleep_range(1.65, 1.70);
-    key_up("Shift_L");
-    mouse_up(3);
-
-    passive_skill();
-
-    // 3
-    key_down("s");
-    sleep_range(0.045, 0.050);
-    mouse_down(1);
-    mouse_down(3);
-    sleep_range(1.2, 1.25);
-    mouse_up(1);
-    mouse_up(3);
-    sleep_range(0.045, 0.050);
-    key_up("s");
-    
-    sleep_range(0.5, 0.6);
-    mouse_up(3);
-
-    release_safety();
-}
-
-#[allow(dead_code)]
-fn worker_loop(running: Arc<AtomicBool>) {
     let start = Instant::now();
     let mut round: u64 = 0;
-
     let mut buffs = BuffCooldown::new();
 
-    buffs.buff_once();
+    if !buffs.buff_once(&ctrl) {
+        release_safety();
+        return;
+    }
     round += 1;
     log_elapsed(start, &format!("Round #{round} (pre-buff)"));
 
-    while running.load(Ordering::Relaxed) {
-        sleep_range(0.25, 0.30);
-       
-        // round 1
-        combo_1_once();
-        sleep_range(0.25, 0.30);
+    while !ctrl.stop_requested() {
+        if !ctrl.sleep_range(0.25, 0.3) {
+            break;
+        }
 
-        combo_2_once();
-        sleep_range(0.25, 0.30);
+        if !combo_1_once(&ctrl) {
+            break;
+        }
+        if !ctrl.sleep_range(0.25, 0.3) {
+            break;
+        }
 
-        combo_3_once(true);
-        sleep_range(0.6, 0.65);
+        if !combo_2_once(&ctrl) {
+            break;
+        }
+        if !ctrl.sleep_range(0.25, 0.3) {
+            break;
+        }
 
-        // round 2
-        combo_1_once();
-        sleep_range(0.25, 0.30);
+        if !combo_3_once(&ctrl, true) {
+            break;
+        }
+        if !ctrl.sleep_range(0.6, 0.65) {
+            break;
+        }
 
-        combo_2_once();
-        sleep_range(0.25, 0.30);
+        if !combo_1_once(&ctrl) {
+            break;
+        }
+        if !ctrl.sleep_range(0.25, 0.3) {
+            break;
+        }
 
-        combo_3_once(false);
-        sleep_range(0.25, 0.30);
+        if !combo_2_once(&ctrl) {
+            break;
+        }
+        if !ctrl.sleep_range(0.25, 0.3) {
+            break;
+        }
 
-        buffs.buff_once();
+        if !combo_3_once(&ctrl, false) {
+            break;
+        }
+        if !ctrl.sleep_range(0.25, 0.3) {
+            break;
+        }
+
+        if !buffs.buff_once(&ctrl) {
+            break;
+        }
 
         release_safety();
-        sleep_range(0.25, 0.30);
+        if !ctrl.sleep_range(0.25, 0.3) {
+            break;
+        }
 
         round += 1;
         log_elapsed(start, &format!("Round #{round} done"));
@@ -309,46 +539,32 @@ fn worker_loop(running: Arc<AtomicBool>) {
 
 fn main() {
     let running = Arc::new(AtomicBool::new(false));
-    let busy = Arc::new(AtomicBool::new(false));
+    let run_id = Arc::new(AtomicU64::new(0));
 
     let running_cb = running.clone();
-    let busy_cb = busy.clone();
+    let run_id_cb = run_id.clone();
 
     println!("F9 = Start loop, F10 = Stop");
 
     if let Err(err) = listen(move |event: Event| match event.event_type {
         EventType::KeyPress(key) => {
             if key == Key::F9 {
-                if busy_cb.swap(true, Ordering::Relaxed) {
-                    return;
-                }
-
+                let new_id = run_id_cb.fetch_add(1, Ordering::Relaxed) + 1;
                 running_cb.store(true, Ordering::Relaxed);
+                release_safety();
 
                 let running2 = running_cb.clone();
-                let busy2 = busy_cb.clone();
+                let run_id2 = run_id_cb.clone();
                 thread::spawn(move || {
-                    worker_loop(running2);
-                   
-                    // combo_1_once();
-                    // sleep_range(0.30, 0.35);
-                    // combo_2_once();
-                    // sleep_range(0.30, 0.35);
-                    // combo_3_once(true);
-                    // sleep_range(0.30, 0.35);
-                    // strong_skill_1();
-                    // strong_skill_2();
-                    busy2.store(false, Ordering::Relaxed);
-                    // println!("Done");
+                    worker_loop(running2, run_id2, new_id);
                 });
                 return;
             }
 
             if key == Key::F10 {
                 running_cb.store(false, Ordering::Relaxed);
+                run_id_cb.fetch_add(1, Ordering::Relaxed);
                 release_safety();
-                busy_cb.store(false, Ordering::Relaxed);
-                // println!("Stop");
                 return;
             }
         }
