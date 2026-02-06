@@ -240,7 +240,7 @@ impl BuffCooldownTracker {
             return false;
         }
 
-        if !controller.system_tap_key("5") {
+        if !controller.system_tap_key("z") {
             return false;
         }
 
