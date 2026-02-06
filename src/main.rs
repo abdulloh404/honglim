@@ -234,14 +234,9 @@ impl BuffCooldownTracker {
                 "3",
                 &mut self.last_pressed_3,
                 Duration::from_secs(180),
-                0.95
+                1.2
             )
         {
-            return false;
-        }
-
-        if controller.is_stop_requested() {
-            controller.release_all_system_inputs();
             return false;
         }
 
@@ -317,7 +312,7 @@ fn perform_combo_2_once(controller: &ControllerContext) -> bool {
     }
 
     controller.system_key_down("s");
-    if !controller.sleep_random_range_seconds_interruptible(0.05, 0.1) {
+    if !controller.sleep_random_range_seconds_interruptible(0.05, 0.07) {
         return false;
     }
 
