@@ -3,17 +3,13 @@ use rdev::{ listen, Event, EventType, Key };
 use std::{
     collections::HashSet,
     process::Command,
-    sync::{ atomic::{ AtomicBool, AtomicU32, AtomicU64, Ordering }, Arc, Mutex },
+    sync::{ atomic::{ AtomicBool, AtomicU64, Ordering }, Arc, Mutex },
     thread,
     time::{ Duration, Instant },
 };
 
-static IS_SYSTEM_INJECTING_INPUT: AtomicBool = AtomicBool::new(false);
-
 fn run_xdotool_command(arguments: &[&str]) {
-    IS_SYSTEM_INJECTING_INPUT.store(true, Ordering::Relaxed);
     let _ = Command::new("xdotool").args(arguments).status();
-    IS_SYSTEM_INJECTING_INPUT.store(false, Ordering::Relaxed);
 }
 
 fn format_elapsed_time_mm_ss(program_start_time: Instant) -> String {
@@ -27,35 +23,6 @@ fn log_with_elapsed_time(program_start_time: Instant, message: &str) {
     println!("{} | {}", message, format_elapsed_time_mm_ss(program_start_time));
 }
 
-fn elapsed_milliseconds_since(program_start_time: Instant) -> u64 {
-    program_start_time.elapsed().as_millis() as u64
-}
-
-fn is_player_manual_override_key(key: Key) -> bool {
-    matches!(
-        key,
-        Key::Tab |
-            Key::KeyQ |
-            Key::KeyW |
-            Key::KeyE |
-            Key::KeyA |
-            Key::KeyS |
-            Key::KeyD |
-            Key::KeyF |
-            Key::ShiftLeft |
-            Key::ShiftRight |
-            Key::KeyZ |
-            Key::KeyX |
-            Key::KeyC |
-            Key::Space |
-            Key::KeyV |
-            Key::UpArrow |
-            Key::DownArrow |
-            Key::LeftArrow |
-            Key::RightArrow
-    )
-}
-
 #[derive(Clone)]
 struct ControllerContext {
     is_worker_running_flag: Arc<AtomicBool>,
@@ -64,13 +31,6 @@ struct ControllerContext {
 
     system_pressed_keyboard_keys: Arc<Mutex<HashSet<String>>>,
     system_pressed_mouse_buttons: Arc<Mutex<HashSet<u8>>>,
-
-    player_manual_override_key_hold_count: Arc<AtomicU32>,
-    last_player_manual_override_input_at_ms: Arc<AtomicU64>,
-
-    should_skip_next_passive_skill_after_resume: Arc<AtomicBool>,
-
-    program_start_time: Instant,
 }
 
 impl ControllerContext {
@@ -79,101 +39,23 @@ impl ControllerContext {
             self.active_worker_run_id.load(Ordering::Relaxed) != self.this_worker_run_id
     }
 
-    fn is_player_currently_holding_any_manual_override_key(&self) -> bool {
-        self.player_manual_override_key_hold_count.load(Ordering::Relaxed) > 0
-    }
-
-    fn set_skip_next_passive_skill_after_resume_flag(&self) {
-        self.should_skip_next_passive_skill_after_resume.store(true, Ordering::Relaxed);
-    }
-
-    fn wait_until_player_is_idle(&self) -> bool {
-        loop {
-            if self.is_stop_requested() {
-                self.release_all_system_inputs();
-                return false;
-            }
-
-            if self.is_player_currently_holding_any_manual_override_key() {
-                self.release_all_system_inputs();
-                thread::sleep(Duration::from_millis(5));
-                continue;
-            }
-
-            let last_manual_ms = self.last_player_manual_override_input_at_ms.load(
-                Ordering::Relaxed
-            );
-
-            if last_manual_ms == 0 {
-                return true;
-            }
-
-            let now_ms = elapsed_milliseconds_since(self.program_start_time);
-            if now_ms.saturating_sub(last_manual_ms) >= 500 {
-                return true;
-            }
-
-            self.release_all_system_inputs();
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    fn ensure_player_is_idle_or_pause_worker_until_idle(&self) -> bool {
-        if self.is_stop_requested() {
-            self.release_all_system_inputs();
-            return false;
-        }
-
-        if self.is_player_currently_holding_any_manual_override_key() {
-            self.set_skip_next_passive_skill_after_resume_flag();
-            self.release_all_system_inputs();
-            return self.wait_until_player_is_idle();
-        }
-
-        let last_manual_ms = self.last_player_manual_override_input_at_ms.load(Ordering::Relaxed);
-
-        if last_manual_ms != 0 {
-            let now_ms = elapsed_milliseconds_since(self.program_start_time);
-            if now_ms.saturating_sub(last_manual_ms) < 100 {
-                self.set_skip_next_passive_skill_after_resume_flag();
-                self.release_all_system_inputs();
-                return self.wait_until_player_is_idle();
-            }
-        }
-
-        true
-    }
-
-    fn sleep_seconds_interruptible_and_player_aware(&self, seconds: f64) -> bool {
+    fn sleep_seconds_interruptible(&self, seconds: f64) -> bool {
         if seconds <= 0.0 {
             return !self.is_stop_requested();
         }
 
         let total_sleep_duration = Duration::from_secs_f64(seconds);
         let sleep_tick = Duration::from_millis(5);
+        let sleep_start_time = Instant::now();
 
-        let mut remaining_sleep_duration = total_sleep_duration;
-        let mut last_loop_time = Instant::now();
-
-        while remaining_sleep_duration > Duration::ZERO {
+        while sleep_start_time.elapsed() < total_sleep_duration {
             if self.is_stop_requested() {
                 self.release_all_system_inputs();
                 return false;
             }
 
-            if !self.ensure_player_is_idle_or_pause_worker_until_idle() {
-                return false;
-            }
-
-            let now = Instant::now();
-            let elapsed_since_last_loop = now.saturating_duration_since(last_loop_time);
-            last_loop_time = now;
-
-            remaining_sleep_duration =
-                remaining_sleep_duration.saturating_sub(elapsed_since_last_loop);
-
-            let this_tick_sleep = std::cmp::min(sleep_tick, remaining_sleep_duration);
-            thread::sleep(this_tick_sleep);
+            let remaining = total_sleep_duration.saturating_sub(sleep_start_time.elapsed());
+            thread::sleep(std::cmp::min(sleep_tick, remaining));
         }
 
         true
@@ -182,13 +64,10 @@ impl ControllerContext {
     fn sleep_random_range_seconds_interruptible(&self, min_seconds: f64, max_seconds: f64) -> bool {
         let mut rng = rand::thread_rng();
         let chosen_seconds = rng.gen_range(min_seconds..max_seconds);
-        self.sleep_seconds_interruptible_and_player_aware(chosen_seconds)
+        self.sleep_seconds_interruptible(chosen_seconds)
     }
 
     fn system_key_down(&self, key: &str) {
-        if !self.ensure_player_is_idle_or_pause_worker_until_idle() {
-            return;
-        }
         {
             let mut pressed = self.system_pressed_keyboard_keys.lock().unwrap();
             pressed.insert(key.to_string());
@@ -197,9 +76,6 @@ impl ControllerContext {
     }
 
     fn system_key_up(&self, key: &str) {
-        if !self.ensure_player_is_idle_or_pause_worker_until_idle() {
-            return;
-        }
         {
             let mut pressed = self.system_pressed_keyboard_keys.lock().unwrap();
             pressed.remove(key);
@@ -208,9 +84,6 @@ impl ControllerContext {
     }
 
     fn system_mouse_button_down(&self, button: u8) {
-        if !self.ensure_player_is_idle_or_pause_worker_until_idle() {
-            return;
-        }
         {
             let mut pressed = self.system_pressed_mouse_buttons.lock().unwrap();
             pressed.insert(button);
@@ -219,9 +92,6 @@ impl ControllerContext {
     }
 
     fn system_mouse_button_up(&self, button: u8) {
-        if !self.ensure_player_is_idle_or_pause_worker_until_idle() {
-            return;
-        }
         {
             let mut pressed = self.system_pressed_mouse_buttons.lock().unwrap();
             pressed.remove(&button);
@@ -230,9 +100,6 @@ impl ControllerContext {
     }
 
     fn system_click_mouse_button(&self, button: u8) {
-        if !self.ensure_player_is_idle_or_pause_worker_until_idle() {
-            return;
-        }
         run_xdotool_command(&["click", &button.to_string()]);
     }
 
@@ -241,20 +108,13 @@ impl ControllerContext {
             self.release_all_system_inputs();
             return false;
         }
-        if !self.ensure_player_is_idle_or_pause_worker_until_idle() {
-            return false;
-        }
 
         self.system_key_down(key);
-        if !self.sleep_seconds_interruptible_and_player_aware(0.01) {
+        if !self.sleep_seconds_interruptible(0.01) {
             return false;
         }
         self.system_key_up(key);
         true
-    }
-
-    fn should_skip_next_passive_skill_and_clear_flag(&self) -> bool {
-        self.should_skip_next_passive_skill_after_resume.swap(false, Ordering::Relaxed)
     }
 
     fn release_all_system_inputs(&self) {
@@ -283,18 +143,18 @@ impl ControllerContext {
 #[derive(Debug)]
 struct BuffCooldownTracker {
     last_pressed_q: Option<Instant>,
+    last_pressed_1: Option<Instant>,
     last_pressed_2: Option<Instant>,
     last_pressed_3: Option<Instant>,
-    last_pressed_4: Option<Instant>,
 }
 
 impl BuffCooldownTracker {
     fn new() -> Self {
         Self {
             last_pressed_q: None,
+            last_pressed_1: None,
             last_pressed_2: None,
             last_pressed_3: None,
-            last_pressed_4: None,
         }
     }
 
@@ -323,10 +183,11 @@ impl BuffCooldownTracker {
             }
             *last_pressed = Some(Instant::now());
 
-            if !controller.sleep_seconds_interruptible_and_player_aware(after_sleep_seconds) {
+            if !controller.sleep_seconds_interruptible(after_sleep_seconds) {
                 return false;
             }
         }
+
         true
     }
 
@@ -336,39 +197,42 @@ impl BuffCooldownTracker {
                 controller,
                 "q",
                 &mut self.last_pressed_q,
-                Duration::from_secs(60),
+                Duration::from_secs(120),
                 0.75
             )
         {
             return false;
         }
+
         if
             !Self::press_key_if_ready(
                 controller,
-                "2",
-                &mut self.last_pressed_2,
-                Duration::from_secs(60),
+                "1",
+                &mut self.last_pressed_1,
+                Duration::from_secs(600),
                 0.95
             )
         {
             return false;
         }
+
         if
             !Self::press_key_if_ready(
                 controller,
-                "3",
-                &mut self.last_pressed_3,
-                Duration::from_secs(60),
+                "2",
+                &mut self.last_pressed_2,
+                Duration::from_secs(50),
                 0.75
             )
         {
             return false;
         }
+
         if
             !Self::press_key_if_ready(
                 controller,
-                "4",
-                &mut self.last_pressed_4,
+                "3",
+                &mut self.last_pressed_3,
                 Duration::from_secs(180),
                 0.95
             )
@@ -394,10 +258,6 @@ fn perform_passive_skill(controller: &ControllerContext) -> bool {
     if controller.is_stop_requested() {
         controller.release_all_system_inputs();
         return false;
-    }
-
-    if controller.should_skip_next_passive_skill_and_clear_flag() {
-        return true;
     }
 
     controller.system_key_down("s");
@@ -462,6 +322,10 @@ fn perform_combo_2_once(controller: &ControllerContext) -> bool {
     }
 
     controller.system_key_down("f");
+    if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
+        return false;
+    }
+
     controller.system_key_up("f");
     controller.system_key_up("s");
 
@@ -751,18 +615,11 @@ fn run_skill_worker_loop(controller: ControllerContext) {
 }
 
 fn main() {
-    let program_start_time = Instant::now();
-
     let is_worker_running_flag = Arc::new(AtomicBool::new(false));
     let active_worker_run_id = Arc::new(AtomicU64::new(0));
 
     let system_pressed_keyboard_keys = Arc::new(Mutex::new(HashSet::<String>::new()));
     let system_pressed_mouse_buttons = Arc::new(Mutex::new(HashSet::<u8>::new()));
-
-    let player_manual_override_key_hold_count = Arc::new(AtomicU32::new(0));
-    let last_player_manual_override_input_at_ms = Arc::new(AtomicU64::new(0));
-
-    let should_skip_next_passive_skill_after_resume = Arc::new(AtomicBool::new(false));
 
     let is_worker_running_flag_for_listener = is_worker_running_flag.clone();
     let active_worker_run_id_for_listener = active_worker_run_id.clone();
@@ -770,35 +627,12 @@ fn main() {
     let system_pressed_keyboard_keys_for_listener = system_pressed_keyboard_keys.clone();
     let system_pressed_mouse_buttons_for_listener = system_pressed_mouse_buttons.clone();
 
-    let player_manual_override_key_hold_count_for_listener =
-        player_manual_override_key_hold_count.clone();
-    let last_player_manual_override_input_at_ms_for_listener =
-        last_player_manual_override_input_at_ms.clone();
-
-    let should_skip_next_passive_skill_after_resume_for_listener =
-        should_skip_next_passive_skill_after_resume.clone();
-
     println!("F9 = Start loop, F10 = Stop");
 
     if
         let Err(error) = listen(move |event: Event| {
             match event.event_type {
                 EventType::KeyPress(key) => {
-                    if
-                        !IS_SYSTEM_INJECTING_INPUT.load(Ordering::Relaxed) &&
-                        is_player_manual_override_key(key)
-                    {
-                        last_player_manual_override_input_at_ms_for_listener.store(
-                            elapsed_milliseconds_since(program_start_time),
-                            Ordering::Relaxed
-                        );
-
-                        player_manual_override_key_hold_count_for_listener.fetch_add(
-                            1,
-                            Ordering::Relaxed
-                        );
-                    }
-
                     if key == Key::F9 {
                         let new_worker_run_id =
                             active_worker_run_id_for_listener.fetch_add(1, Ordering::Relaxed) + 1;
@@ -811,13 +645,6 @@ fn main() {
 
                             system_pressed_keyboard_keys: system_pressed_keyboard_keys_for_listener.clone(),
                             system_pressed_mouse_buttons: system_pressed_mouse_buttons_for_listener.clone(),
-
-                            player_manual_override_key_hold_count: player_manual_override_key_hold_count_for_listener.clone(),
-                            last_player_manual_override_input_at_ms: last_player_manual_override_input_at_ms_for_listener.clone(),
-
-                            should_skip_next_passive_skill_after_resume: should_skip_next_passive_skill_after_resume_for_listener.clone(),
-
-                            program_start_time,
                         };
 
                         controller.release_all_system_inputs();
@@ -838,44 +665,12 @@ fn main() {
 
                             system_pressed_keyboard_keys: system_pressed_keyboard_keys_for_listener.clone(),
                             system_pressed_mouse_buttons: system_pressed_mouse_buttons_for_listener.clone(),
-
-                            player_manual_override_key_hold_count: player_manual_override_key_hold_count_for_listener.clone(),
-                            last_player_manual_override_input_at_ms: last_player_manual_override_input_at_ms_for_listener.clone(),
-
-                            should_skip_next_passive_skill_after_resume: should_skip_next_passive_skill_after_resume_for_listener.clone(),
-
-                            program_start_time,
                         };
 
                         controller.release_all_system_inputs();
                         return;
                     }
                 }
-
-                EventType::KeyRelease(key) => {
-                    if IS_SYSTEM_INJECTING_INPUT.load(Ordering::Relaxed) {
-                        return;
-                    }
-
-                    if is_player_manual_override_key(key) {
-                        last_player_manual_override_input_at_ms_for_listener.store(
-                            elapsed_milliseconds_since(program_start_time),
-                            Ordering::Relaxed
-                        );
-
-                        let current_hold_count =
-                            player_manual_override_key_hold_count_for_listener.load(
-                                Ordering::Relaxed
-                            );
-                        if current_hold_count > 0 {
-                            player_manual_override_key_hold_count_for_listener.store(
-                                current_hold_count - 1,
-                                Ordering::Relaxed
-                            );
-                        }
-                    }
-                }
-
                 _ => {}
             }
         })
