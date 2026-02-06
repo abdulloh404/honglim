@@ -1,7 +1,7 @@
 use rand::Rng;
 use rdev::{ listen, Event, EventType, Key };
 use std::{
-    collections::HashSet,
+    collections::{ HashMap, HashSet },
     process::Command,
     sync::{ atomic::{ AtomicBool, AtomicU64, Ordering }, Arc, Mutex },
     thread,
@@ -23,6 +23,44 @@ fn log_with_elapsed_time(program_start_time: Instant, message: &str) {
     println!("{} | {}", message, format_elapsed_time_mm_ss(program_start_time));
 }
 
+fn is_user_manual_pause_key(key: Key) -> bool {
+    matches!(
+        key,
+        Key::KeyQ |
+            Key::KeyW |
+            Key::KeyE |
+            Key::KeyA |
+            Key::KeyS |
+            Key::KeyD |
+            Key::KeyF |
+            Key::KeyZ |
+            Key::KeyX |
+            Key::KeyC |
+            Key::Space |
+            Key::KeyV |
+            Key::ShiftLeft
+    )
+}
+
+fn xdotool_key_name_from_rdev_key(key: Key) -> Option<&'static str> {
+    match key {
+        Key::KeyQ => Some("q"),
+        Key::KeyW => Some("w"),
+        Key::KeyE => Some("e"),
+        Key::KeyA => Some("a"),
+        Key::KeyS => Some("s"),
+        Key::KeyD => Some("d"),
+        Key::KeyF => Some("f"),
+        Key::KeyZ => Some("z"),
+        Key::KeyX => Some("x"),
+        Key::KeyC => Some("c"),
+        Key::KeyV => Some("v"),
+        Key::Space => Some("space"),
+        Key::ShiftLeft => Some("Shift_L"),
+        _ => None,
+    }
+}
+
 #[derive(Clone)]
 struct ControllerContext {
     is_worker_running_flag: Arc<AtomicBool>,
@@ -31,6 +69,13 @@ struct ControllerContext {
 
     system_pressed_keyboard_keys: Arc<Mutex<HashSet<String>>>,
     system_pressed_mouse_buttons: Arc<Mutex<HashSet<u8>>>,
+
+    user_pressed_pause_keyboard_keys: Arc<Mutex<HashSet<Key>>>,
+    last_user_input_change_time: Arc<Mutex<Instant>>,
+
+    recent_injected_key_times: Arc<Mutex<HashMap<String, Instant>>>,
+
+    should_skip_next_passive_skill_once: Arc<AtomicBool>,
 }
 
 impl ControllerContext {
@@ -39,23 +84,73 @@ impl ControllerContext {
             self.active_worker_run_id.load(Ordering::Relaxed) != self.this_worker_run_id
     }
 
-    fn sleep_seconds_interruptible(&self, seconds: f64) -> bool {
-        if seconds <= 0.0 {
-            return !self.is_stop_requested();
-        }
+    fn is_user_currently_requesting_pause(&self) -> bool {
+        !self.user_pressed_pause_keyboard_keys.lock().unwrap().is_empty()
+    }
 
-        let total_sleep_duration = Duration::from_secs_f64(seconds);
+    fn mark_should_skip_next_passive_skill_once(&self) {
+        self.should_skip_next_passive_skill_once.store(true, Ordering::Relaxed);
+    }
+
+    fn take_should_skip_next_passive_skill_once(&self) -> bool {
+        self.should_skip_next_passive_skill_once.swap(false, Ordering::Relaxed)
+    }
+
+    fn wait_until_user_is_idle_for_seconds(&self, required_idle_seconds: f64) -> bool {
+        let required_idle_duration = Duration::from_secs_f64(required_idle_seconds);
         let sleep_tick = Duration::from_millis(5);
-        let sleep_start_time = Instant::now();
 
-        while sleep_start_time.elapsed() < total_sleep_duration {
+        loop {
             if self.is_stop_requested() {
                 self.release_all_system_inputs();
                 return false;
             }
 
-            let remaining = total_sleep_duration.saturating_sub(sleep_start_time.elapsed());
-            thread::sleep(std::cmp::min(sleep_tick, remaining));
+            if self.is_user_currently_requesting_pause() {
+                self.release_all_system_inputs();
+                thread::sleep(sleep_tick);
+                continue;
+            }
+
+            let last_change_time = *self.last_user_input_change_time.lock().unwrap();
+            if last_change_time.elapsed() >= required_idle_duration {
+                return true;
+            }
+
+            thread::sleep(sleep_tick);
+        }
+    }
+
+    fn mark_recent_injected_key_time(&self, key: &str) {
+        self.recent_injected_key_times.lock().unwrap().insert(key.to_string(), Instant::now());
+    }
+
+    fn sleep_seconds_interruptible(&self, seconds: f64) -> bool {
+        if seconds <= 0.0 {
+            return !self.is_stop_requested();
+        }
+
+        let sleep_tick = Duration::from_millis(5);
+        let mut remaining = Duration::from_secs_f64(seconds);
+
+        while remaining > Duration::ZERO {
+            if self.is_stop_requested() {
+                self.release_all_system_inputs();
+                return false;
+            }
+
+            if self.is_user_currently_requesting_pause() {
+                self.release_all_system_inputs();
+                if !self.wait_until_user_is_idle_for_seconds(0.2) {
+                    return false;
+                }
+                self.mark_should_skip_next_passive_skill_once();
+                continue;
+            }
+
+            let this_tick = std::cmp::min(sleep_tick, remaining);
+            thread::sleep(this_tick);
+            remaining = remaining.saturating_sub(this_tick);
         }
 
         true
@@ -68,6 +163,7 @@ impl ControllerContext {
     }
 
     fn system_key_down(&self, key: &str) {
+        self.mark_recent_injected_key_time(key);
         {
             let mut pressed = self.system_pressed_keyboard_keys.lock().unwrap();
             pressed.insert(key.to_string());
@@ -76,6 +172,7 @@ impl ControllerContext {
     }
 
     fn system_key_up(&self, key: &str) {
+        self.mark_recent_injected_key_time(key);
         {
             let mut pressed = self.system_pressed_keyboard_keys.lock().unwrap();
             pressed.remove(key);
@@ -109,6 +206,10 @@ impl ControllerContext {
             return false;
         }
 
+        if !self.wait_until_user_is_idle_for_seconds(0.2) {
+            return false;
+        }
+
         self.system_key_down(key);
         if !self.sleep_seconds_interruptible(0.01) {
             return false;
@@ -125,6 +226,7 @@ impl ControllerContext {
             snapshot
         };
         for key in pressed_keys_snapshot {
+            self.mark_recent_injected_key_time(&key);
             run_xdotool_command(&["keyup", &key]);
         }
 
@@ -174,6 +276,10 @@ impl BuffCooldownTracker {
     ) -> bool {
         if controller.is_stop_requested() {
             controller.release_all_system_inputs();
+            return false;
+        }
+
+        if !controller.wait_until_user_is_idle_for_seconds(0.2) {
             return false;
         }
 
@@ -244,12 +350,21 @@ impl BuffCooldownTracker {
             return false;
         }
 
+        if !controller.sleep_seconds_interruptible(0.65) {
+            return false;
+        }
+
         controller.release_all_system_inputs();
         true
     }
 }
 
 fn perform_passive_skill(controller: &ControllerContext) -> bool {
+    if controller.take_should_skip_next_passive_skill_once() {
+        controller.release_all_system_inputs();
+        return true;
+    }
+
     if controller.is_stop_requested() {
         controller.release_all_system_inputs();
         return false;
@@ -609,6 +724,34 @@ fn run_skill_worker_loop(controller: ControllerContext) {
     log_with_elapsed_time(worker_log_start_time, "Stopped");
 }
 
+fn is_injected_pause_key_event(
+    system_pressed_keyboard_keys: &Arc<Mutex<HashSet<String>>>,
+    recent_injected_key_times: &Arc<Mutex<HashMap<String, Instant>>>,
+    key: Key
+) -> bool {
+    let Some(key_name) = xdotool_key_name_from_rdev_key(key) else {
+        return false;
+    };
+
+    if system_pressed_keyboard_keys.lock().unwrap().contains(key_name) {
+        return true;
+    }
+
+    if
+        let Some(last_injected_time) = recent_injected_key_times
+            .lock()
+            .unwrap()
+            .get(key_name)
+            .cloned()
+    {
+        if last_injected_time.elapsed() < Duration::from_millis(120) {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn main() {
     let is_worker_running_flag = Arc::new(AtomicBool::new(false));
     let active_worker_run_id = Arc::new(AtomicU64::new(0));
@@ -616,11 +759,28 @@ fn main() {
     let system_pressed_keyboard_keys = Arc::new(Mutex::new(HashSet::<String>::new()));
     let system_pressed_mouse_buttons = Arc::new(Mutex::new(HashSet::<u8>::new()));
 
+    let user_pressed_pause_keyboard_keys = Arc::new(Mutex::new(HashSet::<Key>::new()));
+    let last_user_input_change_time = Arc::new(
+        Mutex::new(Instant::now() - Duration::from_secs(60))
+    );
+
+    let recent_injected_key_times = Arc::new(Mutex::new(HashMap::<String, Instant>::new()));
+
+    let should_skip_next_passive_skill_once = Arc::new(AtomicBool::new(false));
+
     let is_worker_running_flag_for_listener = is_worker_running_flag.clone();
     let active_worker_run_id_for_listener = active_worker_run_id.clone();
 
     let system_pressed_keyboard_keys_for_listener = system_pressed_keyboard_keys.clone();
     let system_pressed_mouse_buttons_for_listener = system_pressed_mouse_buttons.clone();
+
+    let user_pressed_pause_keyboard_keys_for_listener = user_pressed_pause_keyboard_keys.clone();
+    let last_user_input_change_time_for_listener = last_user_input_change_time.clone();
+
+    let recent_injected_key_times_for_listener = recent_injected_key_times.clone();
+
+    let should_skip_next_passive_skill_once_for_listener =
+        should_skip_next_passive_skill_once.clone();
 
     println!("F9 = Start loop, F10 = Stop");
 
@@ -640,6 +800,13 @@ fn main() {
 
                             system_pressed_keyboard_keys: system_pressed_keyboard_keys_for_listener.clone(),
                             system_pressed_mouse_buttons: system_pressed_mouse_buttons_for_listener.clone(),
+
+                            user_pressed_pause_keyboard_keys: user_pressed_pause_keyboard_keys_for_listener.clone(),
+                            last_user_input_change_time: last_user_input_change_time_for_listener.clone(),
+
+                            recent_injected_key_times: recent_injected_key_times_for_listener.clone(),
+
+                            should_skip_next_passive_skill_once: should_skip_next_passive_skill_once_for_listener.clone(),
                         };
 
                         controller.release_all_system_inputs();
@@ -660,12 +827,46 @@ fn main() {
 
                             system_pressed_keyboard_keys: system_pressed_keyboard_keys_for_listener.clone(),
                             system_pressed_mouse_buttons: system_pressed_mouse_buttons_for_listener.clone(),
+
+                            user_pressed_pause_keyboard_keys: user_pressed_pause_keyboard_keys_for_listener.clone(),
+                            last_user_input_change_time: last_user_input_change_time_for_listener.clone(),
+
+                            recent_injected_key_times: recent_injected_key_times_for_listener.clone(),
+
+                            should_skip_next_passive_skill_once: should_skip_next_passive_skill_once_for_listener.clone(),
                         };
 
                         controller.release_all_system_inputs();
                         return;
                     }
+
+                    if
+                        is_user_manual_pause_key(key) &&
+                        !is_injected_pause_key_event(
+                            &system_pressed_keyboard_keys_for_listener,
+                            &recent_injected_key_times_for_listener,
+                            key
+                        )
+                    {
+                        user_pressed_pause_keyboard_keys_for_listener.lock().unwrap().insert(key);
+                        *last_user_input_change_time_for_listener.lock().unwrap() = Instant::now();
+                    }
                 }
+
+                EventType::KeyRelease(key) => {
+                    if
+                        is_user_manual_pause_key(key) &&
+                        !is_injected_pause_key_event(
+                            &system_pressed_keyboard_keys_for_listener,
+                            &recent_injected_key_times_for_listener,
+                            key
+                        )
+                    {
+                        user_pressed_pause_keyboard_keys_for_listener.lock().unwrap().remove(&key);
+                        *last_user_input_change_time_for_listener.lock().unwrap() = Instant::now();
+                    }
+                }
+
                 _ => {}
             }
         })
