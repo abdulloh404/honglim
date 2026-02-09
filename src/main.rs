@@ -346,13 +346,14 @@ impl BuffCooldownTracker {
             return false;
         }
 
-        if !controller.system_tap_key("z") {
-            return false;
-        }
+        // 340 วินาที
+        // if !controller.system_tap_key("z") {
+        //     return false;
+        // }
 
-        if !controller.sleep_seconds_interruptible(0.65) {
-            return false;
-        }
+        // if !controller.sleep_seconds_interruptible(1.0) {
+        //     return false;
+        // }
 
         controller.release_all_system_inputs();
         true
@@ -569,15 +570,16 @@ fn perform_strong_skill_1(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    if !perform_passive_skill(controller) {
+        return false;
+    }
+
     controller.system_key_down("f");
     if !controller.sleep_random_range_seconds_interruptible(2.0, 2.05) {
         return false;
     }
-    controller.system_key_up("f");
 
-    if !perform_passive_skill(controller) {
-        return false;
-    }
+    controller.system_key_up("f");
 
     controller.release_all_system_inputs();
     true
@@ -589,6 +591,7 @@ fn perform_strong_skill_2(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    // 1 - Shift + F
     controller.system_key_down("Shift_L");
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
@@ -605,9 +608,10 @@ fn perform_strong_skill_2(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    // 2 - Shift + Rmb
     controller.system_key_down("Shift_L");
     controller.system_mouse_button_down(3);
-    if !controller.sleep_random_range_seconds_interruptible(1.65, 1.7) {
+    if !controller.sleep_random_range_seconds_interruptible(1.7, 1.75) {
         return false;
     }
     controller.system_key_up("Shift_L");
@@ -622,6 +626,7 @@ fn perform_strong_skill_2(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    // 3 - Shift + Rmb & Lmb
     controller.system_key_down("s");
     if !controller.sleep_random_range_seconds_interruptible(0.045, 0.05) {
         return false;
@@ -661,14 +666,14 @@ fn run_skill_worker_loop(controller: ControllerContext) {
     log_with_elapsed_time(worker_log_start_time, &format!("Round #{completed_rounds} (pre-buff)"));
 
     while !controller.is_stop_requested() {
-        if !controller.sleep_random_range_seconds_interruptible(0.25, 0.3) {
+        if !controller.sleep_random_range_seconds_interruptible(0.1, 0.15) {
             break;
         }
 
         if !perform_combo_1_once(&controller) {
             break;
         }
-        if !controller.sleep_random_range_seconds_interruptible(0.25, 0.3) {
+        if !controller.sleep_random_range_seconds_interruptible(0.1, 0.15) {
             break;
         }
 
@@ -682,14 +687,14 @@ fn run_skill_worker_loop(controller: ControllerContext) {
         if !perform_combo_3_once(&controller, true) {
             break;
         }
-        if !controller.sleep_random_range_seconds_interruptible(0.6, 0.65) {
+        if !controller.sleep_random_range_seconds_interruptible(0.1, 0.15) {
             break;
         }
 
         if !perform_combo_1_once(&controller) {
             break;
         }
-        if !controller.sleep_random_range_seconds_interruptible(0.25, 0.3) {
+        if !controller.sleep_random_range_seconds_interruptible(0.1, 0.15) {
             break;
         }
 
@@ -703,7 +708,7 @@ fn run_skill_worker_loop(controller: ControllerContext) {
         if !perform_combo_3_once(&controller, false) {
             break;
         }
-        if !controller.sleep_random_range_seconds_interruptible(0.25, 0.3) {
+        if !controller.sleep_random_range_seconds_interruptible(0.1, 0.15) {
             break;
         }
 
@@ -712,7 +717,7 @@ fn run_skill_worker_loop(controller: ControllerContext) {
         }
 
         controller.release_all_system_inputs();
-        if !controller.sleep_random_range_seconds_interruptible(0.25, 0.3) {
+        if !controller.sleep_random_range_seconds_interruptible(0.1, 0.15) {
             break;
         }
 
