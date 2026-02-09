@@ -141,7 +141,7 @@ impl ControllerContext {
 
             if self.is_user_currently_requesting_pause() {
                 self.release_all_system_inputs();
-                if !self.wait_until_user_is_idle_for_seconds(0.2) {
+                if !self.wait_until_user_is_idle_for_seconds(0.1) {
                     return false;
                 }
                 self.mark_should_skip_next_passive_skill_once();
@@ -206,7 +206,7 @@ impl ControllerContext {
             return false;
         }
 
-        if !self.wait_until_user_is_idle_for_seconds(0.2) {
+        if !self.wait_until_user_is_idle_for_seconds(0.1) {
             return false;
         }
 
@@ -248,6 +248,7 @@ struct BuffCooldownTracker {
     last_pressed_1: Option<Instant>,
     last_pressed_2: Option<Instant>,
     last_pressed_3: Option<Instant>,
+    last_pressed_z: Option<Instant>,
 }
 
 impl BuffCooldownTracker {
@@ -257,6 +258,7 @@ impl BuffCooldownTracker {
             last_pressed_1: None,
             last_pressed_2: None,
             last_pressed_3: None,
+            last_pressed_z: None,
         }
     }
 
@@ -279,7 +281,7 @@ impl BuffCooldownTracker {
             return false;
         }
 
-        if !controller.wait_until_user_is_idle_for_seconds(0.2) {
+        if !controller.wait_until_user_is_idle_for_seconds(0.1) {
             return false;
         }
 
@@ -346,7 +348,18 @@ impl BuffCooldownTracker {
             return false;
         }
 
-        // 340 วินาที
+        if
+            !Self::press_key_if_ready(
+                controller,
+                "z",
+                &mut self.last_pressed_z,
+                Duration::from_secs(180),
+                1.3
+            )
+        {
+            return false;
+        }
+
         // if !controller.system_tap_key("z") {
         //     return false;
         // }
@@ -392,11 +405,17 @@ fn perform_combo_1_once(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    // 1 - S + Rmb
     controller.system_key_down("s");
-    if !controller.sleep_random_range_seconds_interruptible(0.05, 0.1) {
+
+    if !controller.sleep_random_range_seconds_interruptible(0.1, 0.2) {
         return false;
     }
     controller.system_click_mouse_button(1);
+
+    if !controller.sleep_random_range_seconds_interruptible(0.1, 0.2) {
+        return false;
+    }
     controller.system_key_up("s");
 
     if !controller.sleep_random_range_seconds_interruptible(0.05, 0.06) {
@@ -427,6 +446,7 @@ fn perform_combo_2_once(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    // 1 - S + F
     controller.system_key_down("s");
     if !controller.sleep_random_range_seconds_interruptible(0.05, 0.07) {
         return false;
@@ -478,6 +498,7 @@ fn perform_combo_3_once(controller: &ControllerContext, use_strong_skill_1: bool
         return false;
     }
 
+    // 1 - S + C
     controller.system_key_down("s");
     controller.system_key_down("c");
     if !controller.sleep_random_range_seconds_interruptible(0.05, 0.1) {
@@ -495,6 +516,7 @@ fn perform_combo_3_once(controller: &ControllerContext, use_strong_skill_1: bool
         return false;
     }
 
+    // 2 - Rmb + Lmb
     controller.system_mouse_button_down(1);
     controller.system_mouse_button_down(3);
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.05) {
@@ -512,6 +534,7 @@ fn perform_combo_3_once(controller: &ControllerContext, use_strong_skill_1: bool
         return false;
     }
 
+    // 2 - S + Q
     controller.system_key_down("s");
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
@@ -548,6 +571,7 @@ fn perform_strong_skill_1(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    // 1 - Shift + Rmb & Lmb
     controller.system_key_down("Shift_L");
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
@@ -574,6 +598,7 @@ fn perform_strong_skill_1(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    // 2 - F
     controller.system_key_down("f");
     if !controller.sleep_random_range_seconds_interruptible(2.0, 2.05) {
         return false;
@@ -626,7 +651,7 @@ fn perform_strong_skill_2(controller: &ControllerContext) -> bool {
         return false;
     }
 
-    // 3 - Shift + Rmb & Lmb
+    // 3 - S + Rmb & Lmb
     controller.system_key_down("s");
     if !controller.sleep_random_range_seconds_interruptible(0.045, 0.05) {
         return false;
