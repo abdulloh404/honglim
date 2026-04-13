@@ -76,6 +76,7 @@ struct ControllerContext {
     recent_injected_key_times: Arc<Mutex<HashMap<String, Instant>>>,
 
     should_skip_next_passive_skill_once: Arc<AtomicBool>,
+    should_skip_rest_of_current_combo_once: Arc<AtomicBool>,
 }
 
 impl ControllerContext {
@@ -96,9 +97,19 @@ impl ControllerContext {
         self.should_skip_next_passive_skill_once.swap(false, Ordering::Relaxed)
     }
 
+    fn mark_should_skip_rest_of_current_combo_once(&self) {
+        self.should_skip_rest_of_current_combo_once.store(true, Ordering::Relaxed);
+    }
+
+    fn take_should_skip_rest_of_current_combo_once(&self) -> bool {
+        self.should_skip_rest_of_current_combo_once.swap(false, Ordering::Relaxed)
+    }
+
     fn wait_until_user_is_idle_for_seconds(&self, required_idle_seconds: f64) -> bool {
         let required_idle_duration = Duration::from_secs_f64(required_idle_seconds);
         let sleep_tick = Duration::from_millis(5);
+
+        let mut saw_pause_during_wait = false;
 
         loop {
             if self.is_stop_requested() {
@@ -107,6 +118,7 @@ impl ControllerContext {
             }
 
             if self.is_user_currently_requesting_pause() {
+                saw_pause_during_wait = true;
                 self.release_all_system_inputs();
                 thread::sleep(sleep_tick);
                 continue;
@@ -114,6 +126,10 @@ impl ControllerContext {
 
             let last_change_time = *self.last_user_input_change_time.lock().unwrap();
             if last_change_time.elapsed() >= required_idle_duration {
+                if saw_pause_during_wait {
+                    self.mark_should_skip_next_passive_skill_once();
+                    self.mark_should_skip_rest_of_current_combo_once();
+                }
                 return true;
             }
 
@@ -145,7 +161,8 @@ impl ControllerContext {
                     return false;
                 }
                 self.mark_should_skip_next_passive_skill_once();
-                continue;
+                self.mark_should_skip_rest_of_current_combo_once();
+                return true;
             }
 
             let this_tick = std::cmp::min(sleep_tick, remaining);
@@ -210,10 +227,21 @@ impl ControllerContext {
             return false;
         }
 
+        if self.take_should_skip_rest_of_current_combo_once() {
+            self.release_all_system_inputs();
+            return true;
+        }
+
         self.system_key_down(key);
         if !self.sleep_seconds_interruptible(0.01) {
             return false;
         }
+
+        if self.take_should_skip_rest_of_current_combo_once() {
+            self.release_all_system_inputs();
+            return true;
+        }
+
         self.system_key_up(key);
         true
     }
@@ -242,13 +270,21 @@ impl ControllerContext {
     }
 }
 
+fn should_abort_remaining_actions_of_current_combo(controller: &ControllerContext) -> bool {
+    if controller.take_should_skip_rest_of_current_combo_once() {
+        controller.release_all_system_inputs();
+        return true;
+    }
+    false
+}
+
 #[derive(Debug)]
 struct BuffCooldownTracker {
     last_pressed_q: Option<Instant>,
     last_pressed_1: Option<Instant>,
     last_pressed_2: Option<Instant>,
     last_pressed_3: Option<Instant>,
-    last_pressed_z: Option<Instant>,
+    // last_pressed_z: Option<Instant>,
 }
 
 impl BuffCooldownTracker {
@@ -258,7 +294,7 @@ impl BuffCooldownTracker {
             last_pressed_1: None,
             last_pressed_2: None,
             last_pressed_3: None,
-            last_pressed_z: None,
+            // last_pressed_z: None,
         }
     }
 
@@ -285,14 +321,27 @@ impl BuffCooldownTracker {
             return false;
         }
 
+        if should_abort_remaining_actions_of_current_combo(controller) {
+            return true;
+        }
+
         if Self::is_ready(*last_pressed, cooldown) {
             if !controller.system_tap_key(key) {
                 return false;
             }
+
+            if should_abort_remaining_actions_of_current_combo(controller) {
+                return true;
+            }
+
             *last_pressed = Some(Instant::now());
 
             if !controller.sleep_seconds_interruptible(after_sleep_seconds) {
                 return false;
+            }
+
+            if should_abort_remaining_actions_of_current_combo(controller) {
+                return true;
             }
         }
 
@@ -348,25 +397,25 @@ impl BuffCooldownTracker {
             return false;
         }
 
-        if
-            !Self::press_key_if_ready(
-                controller,
-                "z",
-                &mut self.last_pressed_z,
-                Duration::from_secs(180),
-                1.3
-            )
-        {
+        // if
+        //     !Self::press_key_if_ready(
+        //         controller,
+        //         "z",
+        //         &mut self.last_pressed_z,
+        //         Duration::from_secs(180),
+        //         1.3
+        //     )
+        // {
+        //     return false;
+        // }
+
+        if !controller.system_tap_key("z") {
             return false;
         }
 
-        // if !controller.system_tap_key("z") {
-        //     return false;
-        // }
-
-        // if !controller.sleep_seconds_interruptible(1.0) {
-        //     return false;
-        // }
+        if !controller.sleep_seconds_interruptible(1.3) {
+            return false;
+        }
 
         controller.release_all_system_inputs();
         true
@@ -384,14 +433,26 @@ fn perform_passive_skill(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_down("s");
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
     }
 
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_mouse_button_down(3);
     if !controller.sleep_random_range_seconds_interruptible(0.45, 0.5) {
         return false;
+    }
+
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     controller.system_mouse_button_up(3);
@@ -405,31 +466,54 @@ fn perform_combo_1_once(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     // 1 - S + Rmb
     controller.system_key_down("s");
 
     if !controller.sleep_random_range_seconds_interruptible(0.1, 0.2) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_click_mouse_button(1);
 
     if !controller.sleep_random_range_seconds_interruptible(0.1, 0.2) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_up("s");
 
     if !controller.sleep_random_range_seconds_interruptible(0.05, 0.06) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_click_mouse_button(3);
 
     if !controller.sleep_random_range_seconds_interruptible(0.5, 0.55) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_click_mouse_button(3);
 
     if !controller.sleep_random_range_seconds_interruptible(0.1, 0.2) {
         return false;
+    }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     if !perform_passive_skill(controller) {
@@ -446,15 +530,25 @@ fn perform_combo_2_once(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     // 1 - S + F
     controller.system_key_down("s");
     if !controller.sleep_random_range_seconds_interruptible(0.05, 0.07) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
 
     controller.system_key_down("f");
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
+    }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     controller.system_key_up("f");
@@ -463,25 +557,44 @@ fn perform_combo_2_once(controller: &ControllerContext) -> bool {
     if !controller.sleep_random_range_seconds_interruptible(0.6, 0.65) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_click_mouse_button(3);
 
     if !controller.sleep_random_range_seconds_interruptible(1.1, 1.15) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_click_mouse_button(3);
 
     if !controller.sleep_random_range_seconds_interruptible(0.75, 0.8) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_click_mouse_button(3);
 
     if !controller.sleep_random_range_seconds_interruptible(0.75, 0.8) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_click_mouse_button(3);
 
     if !controller.sleep_random_range_seconds_interruptible(0.85, 0.9) {
         return false;
+    }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     if !perform_passive_skill(controller) {
@@ -498,22 +611,28 @@ fn perform_combo_3_once(controller: &ControllerContext, use_strong_skill_1: bool
         return false;
     }
 
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     // 1 - S + C
     controller.system_key_down("s");
     controller.system_key_down("c");
     if !controller.sleep_random_range_seconds_interruptible(0.05, 0.1) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_up("s");
     controller.system_key_up("c");
 
     if !controller.sleep_random_range_seconds_interruptible(1.05, 1.1) {
         return false;
     }
-
-    if controller.is_stop_requested() {
-        controller.release_all_system_inputs();
-        return false;
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     // 2 - Rmb + Lmb
@@ -522,16 +641,18 @@ fn perform_combo_3_once(controller: &ControllerContext, use_strong_skill_1: bool
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.05) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_mouse_button_up(1);
     controller.system_mouse_button_up(3);
 
     if !controller.sleep_random_range_seconds_interruptible(0.65, 0.7) {
         return false;
     }
-
-    if controller.is_stop_requested() {
-        controller.release_all_system_inputs();
-        return false;
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     // 2 - S + Q
@@ -539,16 +660,23 @@ fn perform_combo_3_once(controller: &ControllerContext, use_strong_skill_1: bool
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_down("q");
     controller.system_key_up("s");
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_up("q");
 
-    if controller.is_stop_requested() {
-        controller.release_all_system_inputs();
-        return false;
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     let ok = if use_strong_skill_1 {
@@ -571,37 +699,58 @@ fn perform_strong_skill_1(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     // 1 - Shift + Rmb & Lmb
     controller.system_key_down("Shift_L");
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_mouse_button_down(1);
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_mouse_button_down(3);
     if !controller.sleep_random_range_seconds_interruptible(2.2, 2.3) {
         return false;
+    }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     controller.system_key_up("Shift_L");
     controller.system_mouse_button_up(1);
     controller.system_mouse_button_up(3);
 
-    if controller.is_stop_requested() {
-        controller.release_all_system_inputs();
-        return false;
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     if !perform_passive_skill(controller) {
         return false;
     }
 
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     // 2 - F
     controller.system_key_down("f");
     if !controller.sleep_random_range_seconds_interruptible(2.0, 2.05) {
         return false;
+    }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     controller.system_key_up("f");
@@ -616,21 +765,32 @@ fn perform_strong_skill_2(controller: &ControllerContext) -> bool {
         return false;
     }
 
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     // 1 - Shift + F
     controller.system_key_down("Shift_L");
     if !controller.sleep_random_range_seconds_interruptible(0.01, 0.02) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_down("f");
     if !controller.sleep_random_range_seconds_interruptible(1.1, 1.15) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_up("Shift_L");
     controller.system_key_up("f");
 
-    if controller.is_stop_requested() {
-        controller.release_all_system_inputs();
-        return false;
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     // 2 - Shift + Rmb
@@ -639,16 +799,23 @@ fn perform_strong_skill_2(controller: &ControllerContext) -> bool {
     if !controller.sleep_random_range_seconds_interruptible(1.7, 1.75) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_up("Shift_L");
     controller.system_mouse_button_up(3);
+
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
 
     if !perform_passive_skill(controller) {
         return false;
     }
 
-    if controller.is_stop_requested() {
-        controller.release_all_system_inputs();
-        return false;
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
     }
 
     // 3 - S + Rmb & Lmb
@@ -656,21 +823,37 @@ fn perform_strong_skill_2(controller: &ControllerContext) -> bool {
     if !controller.sleep_random_range_seconds_interruptible(0.045, 0.05) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_mouse_button_down(1);
     controller.system_mouse_button_down(3);
     if !controller.sleep_random_range_seconds_interruptible(1.2, 1.25) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_mouse_button_up(1);
     controller.system_mouse_button_up(3);
     if !controller.sleep_random_range_seconds_interruptible(0.045, 0.05) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_key_up("s");
 
     if !controller.sleep_random_range_seconds_interruptible(0.5, 0.6) {
         return false;
     }
+    if should_abort_remaining_actions_of_current_combo(controller) {
+        return true;
+    }
+
     controller.system_mouse_button_up(3);
 
     controller.release_all_system_inputs();
@@ -705,7 +888,7 @@ fn run_skill_worker_loop(controller: ControllerContext) {
         if !perform_combo_2_once(&controller) {
             break;
         }
-        if !controller.sleep_random_range_seconds_interruptible(0.25, 0.3) {
+        if !controller.sleep_random_range_seconds_interruptible(0.3, 0.35) {
             break;
         }
 
@@ -726,7 +909,7 @@ fn run_skill_worker_loop(controller: ControllerContext) {
         if !perform_combo_2_once(&controller) {
             break;
         }
-        if !controller.sleep_random_range_seconds_interruptible(0.25, 0.3) {
+        if !controller.sleep_random_range_seconds_interruptible(0.3, 0.35) {
             break;
         }
 
@@ -797,6 +980,7 @@ fn main() {
     let recent_injected_key_times = Arc::new(Mutex::new(HashMap::<String, Instant>::new()));
 
     let should_skip_next_passive_skill_once = Arc::new(AtomicBool::new(false));
+    let should_skip_rest_of_current_combo_once = Arc::new(AtomicBool::new(false));
 
     let is_worker_running_flag_for_listener = is_worker_running_flag.clone();
     let active_worker_run_id_for_listener = active_worker_run_id.clone();
@@ -811,6 +995,8 @@ fn main() {
 
     let should_skip_next_passive_skill_once_for_listener =
         should_skip_next_passive_skill_once.clone();
+    let should_skip_rest_of_current_combo_once_for_listener =
+        should_skip_rest_of_current_combo_once.clone();
 
     println!("F9 = Start loop, F10 = Stop");
 
@@ -837,6 +1023,7 @@ fn main() {
                             recent_injected_key_times: recent_injected_key_times_for_listener.clone(),
 
                             should_skip_next_passive_skill_once: should_skip_next_passive_skill_once_for_listener.clone(),
+                            should_skip_rest_of_current_combo_once: should_skip_rest_of_current_combo_once_for_listener.clone(),
                         };
 
                         controller.release_all_system_inputs();
@@ -864,6 +1051,7 @@ fn main() {
                             recent_injected_key_times: recent_injected_key_times_for_listener.clone(),
 
                             should_skip_next_passive_skill_once: should_skip_next_passive_skill_once_for_listener.clone(),
+                            should_skip_rest_of_current_combo_once: should_skip_rest_of_current_combo_once_for_listener.clone(),
                         };
 
                         controller.release_all_system_inputs();
